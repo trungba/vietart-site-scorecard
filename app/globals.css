@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;0,9..40,800;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+
+:root {
+  --navy: #1B2A4A;
+  --slate: #37474F;
+  --blue: #1565C0;
+  --teal: #00897B;
+  --green: #2E7D32;
+  --orange: #E65100;
+  --red: #C62828;
+  --gold: #F9A825;
+}
+
+body { font-family: 'DM Sans', system-ui, sans-serif; background: #FAFAFA; }
+
+input, textarea, select {
+  font-family: inherit;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--blue) !important;
+  box-shadow: 0 0 0 3px rgba(21,101,192,0.1);
+}
+
+.score-btn { transition: all 0.15s ease; }
+.score-btn:hover { transform: scale(1.1); }
+.score-btn.active { transform: scale(1.15); box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+
+.card { transition: box-shadow 0.2s; }
+.card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+
+@keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+.fade-in { animation: fadeIn 0.3s ease; }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
