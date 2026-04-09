@@ -2,6 +2,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { GROUPS, CRITERIA, TRAFFIC_SLOTS, SURVEY_FIELDS, SURVEY_SECTIONS, calcResults, getVerdict } from '@/lib/data'
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, Cell } from 'recharts'
+import * as XLSX from 'xlsx'
 
 const COLORS = ['#1565C0','#00897B','#E65100','#C62828','#2E7D32']
 
@@ -124,30 +125,334 @@ export default function Home() {
     {id:'export', label:'Export', icon:'💾'},
   ]
 
-  const exportCSV = () => {
-    const lines = ['VIETART F&B — SITE SCORECARD REPORT',`Ngày: ${new Date().toLocaleDateString('vi-VN')}`,'']
+  // ── EXPORT XLSX ──
+  const exportXLSX = () => {
+    const wb = XLSX.utils.book_new()
+    const today = new Date().toLocaleDateString('vi-VN')
+    const fileName = `${new Date().toISOString().slice(2,10).replace(/-/g,'')}_OPS_NSO_SiteScorecard`
+
+    // Sheet 1: Dashboard — tổng hợp
+    const dashData = [
+      ['VIETART F&B — SITE SCORECARD REPORT'],
+      [`Ngày xuất: ${today}`],
+      [],
+      ['BẢNG TỔNG HỢP KẾT QUẢ'],
+      ['Location', 'Địa chỉ', 'Diện tích (m²)', 'Mặt tiền (m)', 'Giá thuê', 'Tổng điểm', 'Điểm tối đa', 'Tỷ lệ (%)', 'Critical Fail', 'Kết luận'],
+    ]
     activeResults.forEach(r => {
-      const l = locs.find(x=>x.id===r.locId)
-      lines.push(`=== ${r.name} ===`)
-      lines.push(`Địa chỉ: ${l.survey.address||'—'}`)
-      lines.push(`Diện tích: ${l.survey.area||'—'} m² | Mặt tiền: ${l.survey.frontage||'—'} m`)
-      lines.push(`Giá thuê: ${l.survey.rent||'—'}`)
-      lines.push(`Tổng điểm: ${r.totalW.toFixed(2)} / ${r.totalMax.toFixed(2)}`)
-      lines.push(`Tỷ lệ: ${(r.pct*100).toFixed(1)}% | Critical Fail: ${r.totalCrit}`)
-      lines.push(`Kết luận: ${r.verdict?.label||'—'}`)
-      lines.push('')
-      lines.push('Nhóm,Trọng số,Điểm,Max')
-      r.groupScores.forEach((gs,gi) => lines.push(`"${GROUPS[gi].name}",${GROUPS[gi].weight}%,${gs.weighted.toFixed(2)},${gs.maxW.toFixed(2)}`))
-      lines.push('')
-      lines.push('STT,Tiêu chí,Critical,Điểm')
-      CRITERIA.forEach((c,ci) => { if(l.scores[ci]) lines.push(`${ci+1},"${c.n}",${c.c?'Yes':'No'},${l.scores[ci]}`) })
-      lines.push('','---','')
+      const l = locs.find(x => x.id === r.locId)
+      dashData.push([
+        r.name, l.survey.address||'', l.survey.area||'', l.survey.frontage||'', l.survey.rent||'',
+        parseFloat(r.totalW.toFixed(2)), parseFloat(r.totalMax.toFixed(2)),
+        parseFloat((r.pct*100).toFixed(1)), r.totalCrit, r.verdict?.label||'—'
+      ])
     })
-    const blob = new Blob(['\uFEFF'+lines.join('\n')], {type:'text/csv;charset=utf-8'})
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `${new Date().toISOString().slice(2,10).replace(/-/g,'')}_OPS_NSO_SiteScorecard.csv`
-    a.click()
+    dashData.push([], ['ĐIỂM THEO NHÓM TIÊU CHÍ'])
+    const grpHeader = ['Nhóm tiêu chí', 'Trọng số (%)']
+    activeResults.forEach(r => grpHeader.push(r.name))
+    dashData.push(grpHeader)
+    GROUPS.forEach((g, gi) => {
+      const row = [g.name, g.weight]
+      activeResults.forEach(r => row.push(parseFloat(r.groupScores[gi].weighted.toFixed(2))))
+      dashData.push(row)
+    })
+    const wsDash = XLSX.utils.aoa_to_sheet(dashData)
+    wsDash['!cols'] = [{wch:30},{wch:35},{wch:12},{wch:12},{wch:15},{wch:10},{wch:10},{wch:10},{wch:12},{wch:18}]
+    XLSX.utils.book_append_sheet(wb, wsDash, 'Dashboard')
+
+    // Sheet 2: Scoring — chi tiết điểm từng location
+    activeResults.forEach(r => {
+      const l = locs.find(x => x.id === r.locId)
+      const scoreData = [
+        [`SCORING — ${r.name}`],
+        [`Địa chỉ: ${l.survey.address||'—'}`],
+        [`Tỷ lệ: ${(r.pct*100).toFixed(1)}% | Kết luận: ${r.verdict?.label||'—'}`],
+        [],
+        ['STT', 'Nhóm', 'Tiêu chí', 'Critical', 'W tiêu chí (%)', 'Điểm (1-5)', 'Điểm quy đổi'],
+      ]
+      CRITERIA.forEach((c, ci) => {
+        const score = l.scores[ci] || ''
+        const g = GROUPS.find(g => g.id === c.g)
+        const weighted = score ? parseFloat((score * g.weight/100 * c.w/100).toFixed(3)) : ''
+        scoreData.push([
+          ci+1, g.name, c.n, c.c?'Yes':'No', c.w, score, weighted
+        ])
+      })
+      scoreData.push([], ['', '', '', '', 'TỔNG:', '', parseFloat(r.totalW.toFixed(2))])
+      const wsScore = XLSX.utils.aoa_to_sheet(scoreData)
+      wsScore['!cols'] = [{wch:5},{wch:22},{wch:40},{wch:8},{wch:10},{wch:10},{wch:12}]
+      const sheetName = r.name.slice(0, 28) // Excel max 31 chars
+      XLSX.utils.book_append_sheet(wb, wsScore, sheetName)
+    })
+
+    // Sheet 3: Survey Data
+    activeResults.forEach(r => {
+      const l = locs.find(x => x.id === r.locId)
+      const survData = [
+        [`T.A SURVEY — ${r.name}`],
+        [`Ngày: ${today}`],
+        [],
+        ['Hạng mục', 'Giá trị'],
+      ]
+      SURVEY_FIELDS.forEach(f => {
+        if (l.survey[f.key]) survData.push([f.label, l.survey[f.key]])
+      })
+      // Traffic data
+      survData.push([], ['BẢNG ĐẾM LƯU LƯỢNG'], ['Khung giờ', 'Đi bộ', 'Xe máy', 'Ô tô', 'Tổng/15p', 'Ước/giờ'])
+      TRAFFIC_SLOTS.forEach((s, si) => {
+        const w = parseInt(l.survey[`tf_w_${si}`])||0
+        const b = parseInt(l.survey[`tf_b_${si}`])||0
+        const c = parseInt(l.survey[`tf_c_${si}`])||0
+        if (w||b||c) survData.push([`${s.label} (${s.time})`, w, b, c, w+b+c, (w+b+c)*4])
+      })
+      // Competitors
+      survData.push([], ['ĐỐI THỦ CẠNH TRANH'], ['Tên', 'Khoảng cách', 'Giá TB'])
+      for (let i=0;i<5;i++) {
+        if (l.survey[`cp_n_${i}`]) survData.push([l.survey[`cp_n_${i}`], l.survey[`cp_d_${i}`]||'', l.survey[`cp_p_${i}`]||''])
+      }
+      // Other sections
+      SURVEY_SECTIONS.forEach(sec => {
+        survData.push([], [sec.title.toUpperCase()])
+        sec.fields.forEach(f => {
+          if (l.survey[f.key]) survData.push([f.label, l.survey[f.key]])
+        })
+      })
+      // Summary
+      const summaryFields = [['summary_gut','Cảm nhận'],['summary_pros','Ưu điểm'],['summary_cons','Rủi ro'],['summary_recommend','Đề xuất']]
+      survData.push([], ['ĐÁNH GIÁ TỔNG QUAN'])
+      summaryFields.forEach(([k,label]) => { if(l.survey[k]) survData.push([label, l.survey[k]]) })
+
+      const wsSurv = XLSX.utils.aoa_to_sheet(survData)
+      wsSurv['!cols'] = [{wch:30},{wch:20},{wch:12},{wch:12},{wch:12},{wch:12}]
+      XLSX.utils.book_append_sheet(wb, wsSurv, `Survey ${r.name.slice(0,22)}`)
+    })
+
+    XLSX.writeFile(wb, `${fileName}.xlsx`)
+  }
+
+  // ── EXPORT PDF (Vietnamese-compatible) ──
+  const exportPDF = async () => {
+    const { default: jsPDF } = await import('jspdf')
+    await import('jspdf-autotable')
+
+    const doc = new jsPDF('p', 'mm', 'a4')
+    const pageW = doc.internal.pageSize.getWidth()
+    const pageH = doc.internal.pageSize.getHeight()
+    const today = new Date().toLocaleDateString('vi-VN')
+    const fileName = `${new Date().toISOString().slice(2,10).replace(/-/g,'')}_OPS_NSO_SiteScorecard`
+    let y = 15
+
+    // Vietnamese text helper — jsPDF default fonts don't support diacritics
+    // We use helvetica which handles most Latin Extended chars in jsPDF v4+
+    const addTitle = (text, size=16) => {
+      doc.setFontSize(size); doc.setFont('helvetica','bold'); doc.setTextColor(27,42,74)
+      doc.text(text, pageW/2, y, {align:'center'}); y += size*0.5 + 3
+    }
+    const addSubtitle = (text, size=10) => {
+      doc.setFontSize(size); doc.setFont('helvetica','normal'); doc.setTextColor(100)
+      doc.text(text, pageW/2, y, {align:'center'}); y += size*0.4 + 3
+    }
+    const addSectionTitle = (text, size=12) => {
+      doc.setFontSize(size); doc.setFont('helvetica','bold'); doc.setTextColor(27,42,74)
+      doc.setFillColor(236,239,241); doc.rect(14, y-4, pageW-28, 8, 'F')
+      doc.text(text, 16, y); y += 10
+    }
+    const addLine = (label, value, indent=14) => {
+      doc.setFontSize(9); doc.setFont('helvetica','bold'); doc.setTextColor(60)
+      doc.text(label, indent, y)
+      doc.setFont('helvetica','normal'); doc.setTextColor(30)
+      doc.text(String(value||''), indent + 45, y)
+      y += 5
+    }
+    const checkPage = (need=30) => {
+      if (y + need > pageH - 20) { doc.addPage(); y = 15 }
+    }
+
+    // ═══ PAGE 1: COVER + SUMMARY ═══
+    // Header bar
+    doc.setFillColor(27,42,74); doc.rect(0, 0, pageW, 40, 'F')
+    doc.setFontSize(22); doc.setFont('helvetica','bold'); doc.setTextColor(255)
+    doc.text('SITE SCORECARD REPORT', pageW/2, 18, {align:'center'})
+    doc.setFontSize(10); doc.setFont('helvetica','normal'); doc.setTextColor(200)
+    doc.text('VietArt F&B — Danh gia mat bang mo moi', pageW/2, 27, {align:'center'})
+    doc.text(today, pageW/2, 34, {align:'center'})
+    y = 52
+
+    // Summary table
+    if (activeResults.length > 0) {
+      addSectionTitle('TONG HOP KET QUA')
+      doc.autoTable({
+        startY: y,
+        head: [['Location', 'Dia chi', 'Diem', 'Ty le', 'Crit Fail', 'Ket luan']],
+        body: activeResults.map(r => {
+          const l = locs.find(x=>x.id===r.locId)
+          const verdictText = r.verdict?.label?.replace(/[^\w\s\-—]/g, '').trim() || '—'
+          return [r.name, l.survey.address||'—', r.totalW.toFixed(2), `${(r.pct*100).toFixed(1)}%`, String(r.totalCrit), verdictText]
+        }),
+        styles: { fontSize: 9, cellPadding: 3, font: 'helvetica', lineWidth: 0.1, lineColor: [200,200,200] },
+        headStyles: { fillColor: [27,42,74], textColor: 255, fontStyle: 'bold', fontSize: 8 },
+        alternateRowStyles: { fillColor: [250,250,250] },
+        columnStyles: { 0:{cellWidth:28}, 1:{cellWidth:50}, 2:{cellWidth:16}, 3:{cellWidth:16}, 4:{cellWidth:16}, 5:{cellWidth:32} },
+        margin: { left: 14, right: 14 },
+        didParseCell: (data) => {
+          if (data.section==='body' && data.column.index===4) {
+            const val = parseInt(data.cell.raw)
+            if (val > 0) { data.cell.styles.textColor = [198,40,40]; data.cell.styles.fontStyle = 'bold' }
+            else { data.cell.styles.textColor = [46,125,50] }
+          }
+        }
+      })
+      y = doc.lastAutoTable.finalY + 10
+    }
+
+    // Group scores table
+    checkPage(80)
+    addSectionTitle('DIEM THEO NHOM TIEU CHI')
+    const grpHead = ['Nhom tieu chi', 'W (%)']
+    activeResults.forEach(r => grpHead.push(r.name))
+    const grpBody = GROUPS.map((g, gi) => {
+      const row = [g.name, `${g.weight}%`]
+      activeResults.forEach(r => row.push(r.groupScores[gi].weighted.toFixed(2)))
+      return row
+    })
+    doc.autoTable({
+      startY: y,
+      head: [grpHead],
+      body: grpBody,
+      styles: { fontSize: 8, cellPadding: 2.5, font: 'helvetica', lineWidth: 0.1, lineColor: [200,200,200] },
+      headStyles: { fillColor: [0,137,123], textColor: 255, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [250,250,250] },
+      columnStyles: { 0: {cellWidth: 45}, 1: {cellWidth: 14} },
+      margin: { left: 14, right: 14 },
+    })
+    y = doc.lastAutoTable.finalY + 10
+
+    // Verdict legend
+    checkPage(40)
+    addSectionTitle('PHAN LOAI GO / NO-GO')
+    const legendBody = [
+      ['EXCELLENT', '>= 85%', 'Uu tien ky HD ngay'],
+      ['GOOD', '70 - 84%', 'De xuat duyet'],
+      ['ACCEPTABLE', '60 - 69%', 'Can khac phuc truoc'],
+      ['REJECT', '< 60%', 'Khong de xuat'],
+      ['CRITICAL FAIL', 'Critical <= 2', 'Tu dong FAIL'],
+    ]
+    doc.autoTable({
+      startY: y,
+      head: [['Phan loai', 'Nguong', 'Mo ta']],
+      body: legendBody,
+      styles: { fontSize: 8, cellPadding: 2.5, font: 'helvetica' },
+      headStyles: { fillColor: [55,71,79], textColor: 255 },
+      columnStyles: { 0:{cellWidth:30, fontStyle:'bold'}, 1:{cellWidth:25} },
+      margin: { left: 14, right: 14 },
+    })
+    y = doc.lastAutoTable.finalY + 5
+
+    // ═══ DETAIL PAGES PER LOCATION ═══
+    activeResults.forEach(r => {
+      doc.addPage(); y = 15
+      const l = locs.find(x=>x.id===r.locId)
+
+      // Location header bar
+      doc.setFillColor(21,101,192); doc.rect(0, 0, pageW, 30, 'F')
+      doc.setFontSize(16); doc.setFont('helvetica','bold'); doc.setTextColor(255)
+      doc.text(r.name, pageW/2, 13, {align:'center'})
+      doc.setFontSize(9); doc.setFont('helvetica','normal')
+      doc.text(`Ty le: ${(r.pct*100).toFixed(1)}% | ${r.verdict?.label?.replace(/[^\w\s\-—]/g,'').trim()||'—'} | Critical Fail: ${r.totalCrit}`, pageW/2, 22, {align:'center'})
+      y = 38
+
+      // Survey info
+      addSectionTitle('THONG TIN CHUNG')
+      if (l.survey.address) addLine('Dia chi:', l.survey.address)
+      if (l.survey.area) addLine('Dien tich:', `${l.survey.area} m2`)
+      if (l.survey.frontage) addLine('Mat tien:', `${l.survey.frontage} m`)
+      if (l.survey.rent) addLine('Gia thue:', l.survey.rent)
+      if (l.survey.concept) addLine('Concept:', l.survey.concept)
+      if (l.survey.landlord) addLine('Chu nha:', l.survey.landlord)
+      y += 3
+
+      // Traffic data
+      const hasTraffic = TRAFFIC_SLOTS.some((s,si) => l.survey[`tf_w_${si}`] || l.survey[`tf_b_${si}`] || l.survey[`tf_c_${si}`])
+      if (hasTraffic) {
+        checkPage(40)
+        addSectionTitle('LUU LUONG NGUOI')
+        const tfBody = []
+        TRAFFIC_SLOTS.forEach((s,si) => {
+          const w=parseInt(l.survey[`tf_w_${si}`])||0, b=parseInt(l.survey[`tf_b_${si}`])||0, c=parseInt(l.survey[`tf_c_${si}`])||0
+          if (w||b||c) tfBody.push([`${s.label} (${s.time})`, w, b, c, w+b+c, (w+b+c)*4])
+        })
+        if (tfBody.length > 0) {
+          doc.autoTable({
+            startY: y, head: [['Khung gio', 'Di bo', 'Xe may', 'O to', 'Tong/15p', 'Uoc/gio']],
+            body: tfBody,
+            styles: { fontSize: 8, cellPadding: 2, font: 'helvetica' },
+            headStyles: { fillColor: [0,137,123], textColor: 255 },
+            margin: { left: 14, right: 14 },
+          })
+          y = doc.lastAutoTable.finalY + 8
+        }
+      }
+
+      // Scoring detail table
+      checkPage(40)
+      addSectionTitle('CHI TIET CHAM DIEM')
+      const scoreBody = []
+      CRITERIA.forEach((c, ci) => {
+        const score = l.scores[ci]
+        if (score) {
+          const g = GROUPS.find(g => g.id === c.g)
+          scoreBody.push([ci+1, g.name, c.n, c.c?'Yes':'', score, (score*g.weight/100*c.w/100).toFixed(3)])
+        }
+      })
+
+      if (scoreBody.length > 0) {
+        doc.autoTable({
+          startY: y,
+          head: [['#', 'Nhom', 'Tieu chi', 'Crit', 'Diem', 'Quy doi']],
+          body: scoreBody,
+          styles: { fontSize: 7, cellPadding: 2, font: 'helvetica', lineWidth: 0.1, lineColor: [220,220,220] },
+          headStyles: { fillColor: [21,101,192], textColor: 255, fontStyle: 'bold' },
+          alternateRowStyles: { fillColor: [250,250,250] },
+          columnStyles: { 0:{cellWidth:8}, 1:{cellWidth:28}, 2:{cellWidth:68}, 3:{cellWidth:10}, 4:{cellWidth:10}, 5:{cellWidth:14} },
+          margin: { left: 14, right: 14 },
+          didParseCell: (data) => {
+            if (data.section==='body' && data.column.index===3 && data.cell.raw==='Yes') {
+              data.cell.styles.textColor = [198,40,40]; data.cell.styles.fontStyle = 'bold'
+            }
+          }
+        })
+        y = doc.lastAutoTable.finalY + 5
+      }
+
+      // Summary notes
+      const summaryKeys = [['summary_gut','Cam nhan'],['summary_pros','Uu diem'],['summary_cons','Rui ro'],['summary_recommend','De xuat']]
+      const hasSummary = summaryKeys.some(([k]) => l.survey[k])
+      if (hasSummary) {
+        checkPage(30)
+        addSectionTitle('DANH GIA TONG QUAN')
+        summaryKeys.forEach(([k,label]) => {
+          if (l.survey[k]) {
+            doc.setFontSize(8); doc.setFont('helvetica','bold'); doc.setTextColor(60)
+            doc.text(label + ':', 14, y); y += 4
+            doc.setFont('helvetica','normal'); doc.setTextColor(30)
+            const lines = doc.splitTextToSize(l.survey[k], pageW - 32)
+            doc.text(lines, 16, y); y += lines.length * 4 + 3
+            checkPage(10)
+          }
+        })
+      }
+    })
+
+    // Footer on all pages
+    const pageCount = doc.internal.getNumberOfPages()
+    for (let i=1; i<=pageCount; i++) {
+      doc.setPage(i)
+      doc.setDrawColor(200); doc.line(14, pageH-14, pageW-14, pageH-14)
+      doc.setFontSize(7); doc.setTextColor(150); doc.setFont('helvetica','normal')
+      doc.text(`VietArt F&B — Site Scorecard Report | NSO-D17 | Trang ${i}/${pageCount}`, pageW/2, pageH-9, {align:'center'})
+    }
+
+    doc.save(`${fileName}.pdf`)
   }
 
   return (
@@ -488,13 +793,24 @@ export default function Home() {
         {tab==='export' && (
           <div className="space-y-4 fade-in">
             <div className="card bg-white rounded-xl p-4 border border-gray-200 border-t-4 border-t-brand-green">
-              <h3 className="font-bold r-text-lg text-navy mb-3">Tải báo cáo</h3>
-              <p className="r-text-sm text-gray-500 mb-4">File CSV chứa đầy đủ dữ liệu Survey, Scoring & Dashboard cho tất cả Location đã chấm điểm.</p>
-              <button onClick={exportCSV}
-                className="w-full py-3 bg-brand-green text-white rounded-xl font-bold r-text-base hover:opacity-90 transition">
-                📥 Tải báo cáo CSV
-              </button>
-              <p className="r-r-text-xs text-gray-400 mt-2">Mở bằng Excel / Google Sheets / Numbers</p>
+              <h3 className="font-bold r-text-lg text-navy mb-3">Xuất báo cáo</h3>
+              <p className="r-text-sm text-gray-500 mb-4">
+                Báo cáo chứa đầy đủ Dashboard, Scoring chi tiết và T.A Survey cho tất cả Location đã chấm điểm.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button onClick={exportXLSX}
+                  className="w-full py-4 bg-brand-green text-white rounded-xl font-bold r-text-base hover:opacity-90 transition flex items-center justify-center gap-2">
+                  <span className="text-xl">📊</span> Tải file Excel (.xlsx)
+                </button>
+                <button onClick={exportPDF}
+                  className="w-full py-4 bg-brand-red text-white rounded-xl font-bold r-text-base hover:opacity-90 transition flex items-center justify-center gap-2">
+                  <span className="text-xl">📄</span> Tải file PDF
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 r-text-xs text-gray-400">
+                <p>Excel: đầy đủ dữ liệu, có nhiều sheet, chỉnh sửa được</p>
+                <p>PDF: báo cáo đẹp, gửi sếp / đối tác, không chỉnh sửa</p>
+              </div>
             </div>
 
             <div className="card bg-white rounded-xl p-4 border border-gray-200 border-t-4 border-t-brand-blue">
